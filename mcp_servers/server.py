@@ -227,6 +227,43 @@ def _coerce_meal_item(item: Any, nutrition_cache: dict[str, dict]) -> dict | Non
     return meal
 
 
+def _normalize_logged_item(item: dict) -> dict:
+    name = str(
+        item.get("name")
+        or item.get("food")
+        or item.get("food_name")
+        or item.get("item")
+        or "unknown"
+    ).strip()
+    quantity = item.get("quantity")
+    if quantity in [None, ""]:
+        quantity = "not recorded"
+
+    return {
+        "name": name,
+        "quantity": quantity,
+        "calories": round(_safe_float(item.get("calories")), 2),
+        "protein_g": round(_safe_float(item.get("protein_g", item.get("protein"))), 2),
+        "carbs_g": round(_safe_float(item.get("carbs_g", item.get("carbs", item.get("carbohydrates")))), 2),
+        "fat_g": round(_safe_float(item.get("fat_g", item.get("fat"))), 2),
+    }
+
+
+def _extract_log_items(parsed_meals_payload: Any) -> list[dict]:
+    parsed = parsed_meals_payload if isinstance(parsed_meals_payload, dict) else {}
+    meals = parsed.get("meals", [])
+    if isinstance(meals, dict):
+        meals = [meals]
+    if not isinstance(meals, list):
+        meals = []
+
+    normalized_items: list[dict] = []
+    for meal in meals:
+        if isinstance(meal, dict):
+            normalized_items.append(_normalize_logged_item(meal))
+    return normalized_items
+
+
 @mcp.tool()
 def log_meal(client_id: int, raw_message: str, parsed_data: str) -> dict:
     """
@@ -316,9 +353,11 @@ def query_client_logs(client_id: int, days: int = 7) -> list:
             {
                 "id": log.id,
                 "logged_at": str(log.logged_at),
+                "date": str(log.logged_at.date()) if log.logged_at else None,
                 "raw_message": log.raw_message,
-                "total_calories": log.total_calories,
-                "total_protein_g": log.total_protein_g,
+                "total_calories": round(_safe_float(log.total_calories), 2),
+                "total_protein_g": round(_safe_float(log.total_protein_g), 2),
+                "logged_items": _extract_log_items(log.parsed_meals),
             }
             for log in logs
         ]
@@ -460,13 +499,7 @@ def get_client_daily_summary(client_id: int, date: str) -> dict:
 
         logged_items = []
         for log in logs:
-            parsed = log.parsed_meals if isinstance(log.parsed_meals, dict) else {}
-            meals = parsed.get("meals", [])
-            if isinstance(meals, dict):
-                meals = [meals]
-            for meal in meals:
-                if isinstance(meal, dict):
-                    logged_items.append(meal)
+            logged_items.extend(_extract_log_items(log.parsed_meals))
 
         return {
             "client_id": client_id,
@@ -476,6 +509,100 @@ def get_client_daily_summary(client_id: int, date: str) -> dict:
             "total_protein_g": round(sum(_safe_float(log.total_protein_g) for log in logs), 2),
             "raw_messages": [log.raw_message for log in logs if log.raw_message],
             "logged_items": logged_items,
+        }
+
+
+@mcp.tool()
+def get_client_date_range_summary(client_id: int, start_date: str, end_date: str) -> dict:
+    """Get date-wise intake summary for a client between two dates (inclusive). Use YYYY-MM-DD."""
+    try:
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    except ValueError:
+        return {"error": "Invalid date format. Use YYYY-MM-DD for start_date and end_date."}
+
+    if end_dt < start_dt:
+        start_dt, end_dt = end_dt, start_dt
+
+    with get_db_session() as db:
+        client = db.query(Client).filter(Client.id == client_id).first()
+        if not client:
+            return {"error": "Client not found"}
+
+        range_end_exclusive = end_dt + timedelta(days=1)
+        logs = (
+            db.query(MealLog)
+            .filter(
+                MealLog.client_id == client_id,
+                MealLog.logged_at >= start_dt,
+                MealLog.logged_at < range_end_exclusive,
+            )
+            .order_by(MealLog.logged_at.asc())
+            .all()
+        )
+
+        by_date: dict[str, dict] = {}
+        cursor = start_dt
+        while cursor <= end_dt:
+            date_key = cursor.strftime("%Y-%m-%d")
+            by_date[date_key] = {
+                "date": date_key,
+                "entries": 0,
+                "total_calories": 0.0,
+                "total_protein_g": 0.0,
+                "logged_items": [],
+                "raw_messages": [],
+            }
+            cursor += timedelta(days=1)
+
+        for log in logs:
+            if not log.logged_at:
+                continue
+            date_key = str(log.logged_at.date())
+            day_bucket = by_date.setdefault(
+                date_key,
+                {
+                    "date": date_key,
+                    "entries": 0,
+                    "total_calories": 0.0,
+                    "total_protein_g": 0.0,
+                    "logged_items": [],
+                    "raw_messages": [],
+                },
+            )
+            day_bucket["entries"] += 1
+            day_bucket["total_calories"] += _safe_float(log.total_calories)
+            day_bucket["total_protein_g"] += _safe_float(log.total_protein_g)
+            day_bucket["logged_items"].extend(_extract_log_items(log.parsed_meals))
+            if log.raw_message:
+                day_bucket["raw_messages"].append(log.raw_message)
+
+        daily_summaries = []
+        for date_key in sorted(by_date.keys()):
+            day = by_date[date_key]
+            day["total_calories"] = round(_safe_float(day["total_calories"]), 2)
+            day["total_protein_g"] = round(_safe_float(day["total_protein_g"]), 2)
+            daily_summaries.append(day)
+
+        overall_calories = round(sum(_safe_float(day["total_calories"]) for day in daily_summaries), 2)
+        overall_protein = round(sum(_safe_float(day["total_protein_g"]) for day in daily_summaries), 2)
+
+        return {
+            "client_id": client.id,
+            "client_name": client.name,
+            "start_date": start_dt.strftime("%Y-%m-%d"),
+            "end_date": end_dt.strftime("%Y-%m-%d"),
+            "targets_per_day": {
+                "calories_kcal": _safe_float(client.target_calories),
+                "protein_g": _safe_float(client.target_protein_g),
+                "carbs_g": _safe_float(client.target_carbs_g),
+                "fat_g": _safe_float(client.target_fat_g),
+            },
+            "daily_summaries": daily_summaries,
+            "overall_totals": {
+                "calories_kcal": overall_calories,
+                "protein_g": overall_protein,
+            },
         }
 
 

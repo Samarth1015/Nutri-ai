@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 
+from agents.model_config import get_agent_model
 from mcp_servers.server import (
     get_client_daily_summary,
     get_weekly_summary,
@@ -28,7 +29,7 @@ async def run_intake_agent(client_obj, message_body: str):
     try:
         from langchain_groq import ChatGroq
 
-        llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0, max_retries=1)
+        llm = ChatGroq(model=get_agent_model("INTAKE_AGENT"), temperature=0, max_retries=1)
     except Exception as e:
         print("[Intake Agent] Groq error:", e)
         send_whatsapp_message(
@@ -134,7 +135,14 @@ async def run_intake_agent(client_obj, message_body: str):
         print("[Intake Agent] Agent invocation failed:", e)
         model_reply = "I saved what I could from your update. Please resend if you want a detailed breakdown."
 
-    final_reply_text = format_intake_reply(str(model_reply), client_obj.name, current_date)
+    final_reply_text = format_intake_reply(
+        str(model_reply),
+        client_obj.name,
+        current_date=current_date,
+        message_body=message_body,
+        target_calories=client_obj.target_calories,
+        target_protein_g=client_obj.target_protein_g,
+    )
     print(f"[Intake Agent] Execution complete. Final agent thought: {final_reply_text}")
 
     send_whatsapp_message(client_obj.phone_number, final_reply_text)

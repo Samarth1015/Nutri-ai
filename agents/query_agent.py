@@ -4,8 +4,10 @@ import json
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 
+from agents.model_config import get_agent_model
 from mcp_servers.server import (
     flag_nutritional_gaps,
+    get_client_date_range_summary,
     get_client_daily_summary,
     get_client_info,
     get_weekly_summary,
@@ -29,7 +31,7 @@ async def run_query_agent(nutritionist_obj, message_body: str):
     try:
         from langchain_groq import ChatGroq
 
-        llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0, max_retries=1)
+        llm = ChatGroq(model=get_agent_model("QUERY_AGENT"), temperature=0, max_retries=1)
     except Exception as e:
         print("[Query Agent] Groq error:", e)
         send_whatsapp_message(nutritionist_obj.phone_number, "Sorry, Groq API is not ready right now.")
@@ -60,14 +62,19 @@ async def run_query_agent(nutritionist_obj, message_body: str):
 
     @tool
     def get_client_logs(client_id: int, days: int = 7) -> str:
-        """Get a client's recent logs for the past N days."""
+        """Get a client's recent logs for the past N days, including per-item quantities in `logged_items`."""
         res = query_client_logs(client_id, days)
         return json.dumps(res) if res else "No logs found."
 
     @tool
     def get_client_day_summary(client_id: int, date: str) -> str:
-        """Get one-day totals for a client on a specific date (YYYY-MM-DD)."""
+        """Get one-day totals for a client on a specific date (YYYY-MM-DD), including item quantities in `logged_items`."""
         return json.dumps(get_client_daily_summary(client_id, date))
+
+    @tool
+    def get_client_range_summary(client_id: int, start_date: str, end_date: str) -> str:
+        """Get date-wise intake between start_date and end_date (inclusive), with per-day targets and item quantities."""
+        return json.dumps(get_client_date_range_summary(client_id, start_date, end_date))
 
     @tool
     def get_clients_missing_logs(days_without_logs: int = 3) -> str:
@@ -97,6 +104,7 @@ async def run_query_agent(nutritionist_obj, message_body: str):
         get_client_nutritional_gaps,
         get_client_logs,
         get_client_day_summary,
+        get_client_range_summary,
         get_clients_missing_logs,
         get_client_profile,
         get_food_nutrition,
@@ -130,7 +138,7 @@ async def run_query_agent(nutritionist_obj, message_body: str):
         print("[Query Agent] Agent invocation failed:", e)
         model_reply = "I hit a temporary issue while checking that. Please try again in a moment."
 
-    final_reply_text = format_query_reply(str(model_reply), nutritionist_obj.name)
+    final_reply_text = format_query_reply(str(model_reply), nutritionist_obj.name, message_body=message_body)
     print(f"[Query Agent] Execution complete. Final agent thought: {final_reply_text}")
 
     send_whatsapp_message(nutritionist_obj.phone_number, final_reply_text)

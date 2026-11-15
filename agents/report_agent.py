@@ -1,5 +1,7 @@
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
+
+from agents.model_config import get_agent_model
 from services.whatsapp import send_whatsapp_message
 from mcp_servers.server import flag_nutritional_gaps, get_weekly_summary, list_nutritionist_clients, lookup_food_nutrition
 
@@ -35,7 +37,7 @@ async def run_report_agent(nutritionist_obj):
     
     try:
         from langchain_groq import ChatGroq
-        llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+        llm = ChatGroq(model=get_agent_model("REPORT_AGENT"), temperature=0)
     except Exception as e:
         print("[Report Agent] Groq error: ", e)
         return

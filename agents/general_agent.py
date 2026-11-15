@@ -4,6 +4,7 @@ import json
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 
+from agents.model_config import get_agent_model
 from mcp_servers.server import lookup_food_nutrition
 from services.whatsapp import send_whatsapp_message
 
@@ -30,7 +31,7 @@ async def run_general_agent(phone_number: str, message_body: str):
     try:
         from langchain_groq import ChatGroq
 
-        llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0, max_retries=1)
+        llm = ChatGroq(model=get_agent_model("GENERAL_AGENT"), temperature=0, max_retries=1)
     except Exception as e:
         print("[General Agent] Groq not configured correctly:", e)
         send_whatsapp_message(phone_number, "Welcome to NutriCoach! Please ask your nutritionist to register your number.")
